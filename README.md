@@ -417,3 +417,25 @@ Unificação de `kitsune.js`, `zapdos.js` e `huldra.js` num só script, com corr
 - Comandos novos: `filter`, `pause`, `resume`, `stats`, `off`, `help`.
 - Guard de dupla injeção e desligamento reversível completo.
 - Árvore recursiva única no lugar de três implementações duplicadas, a do GTM, em particular, só expandia um nível de profundidade.
+
+---
+
+<img width="1305" height="985" alt="image" src="https://github.com/user-attachments/assets/4f6e68aa-b2de-4926-8c3a-e3baec2eca00" />
+
+---
+
+<img width="1147" height="992" alt="image" src="https://github.com/user-attachments/assets/8f737797-8338-4ffd-87fa-faf107274a39" />
+
+---
+
+<img width="1073" height="989" alt="image" src="https://github.com/user-attachments/assets/b103f766-828f-4fea-8baa-c61a65d32f8a" />
+
+---
+
+<img width="1789" height="974" alt="image" src="https://github.com/user-attachments/assets/3527358a-f9d8-45f0-a927-bcebb57934a2" />
+
+<img width="1268" height="953" alt="image" src="https://github.com/user-attachments/assets/d4606073-581c-4adb-ae24-4ce09c105dd2" />
+
+
+---
+
