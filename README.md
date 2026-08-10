@@ -4,7 +4,9 @@
 Uma única injeção mostra as três camadas do rastreamento ao mesmo tempo: o que o site empurra, o que o GTM processa e o que sai pela rede para o GA4.
 
 <img width="2752" height="1536" alt="Gemini_Generated_Image_4fe8254fe8254fe8" src="https://github.com/user-attachments/assets/d87de475-ece9-469f-8561-48a3bf972c27" />
+
 (Imagem gerada por I.A para representar o projeto)
+
 
 ```
 ┌─────────────┐      ┌─────────────┐      ┌──────────────┐
