@@ -2,6 +2,8 @@
 
 **Monitor de tracking em tempo real para o console do navegador.**
 Uma única injeção mostra as três camadas do rastreamento ao mesmo tempo: o que o site empurra, o que o GTM processa e o que sai pela rede para o GA4.
+<img width="1024" height="572" alt="image" src="https://github.com/user-attachments/assets/0753a5a3-8f9c-48f8-a996-33cd7cff7424" />
+
 
 ```
 ┌─────────────┐      ┌─────────────┐      ┌──────────────┐
