@@ -1,11 +1,11 @@
 /**
  * ═══════════════════════════════════════════════════════════════════
- *  CHIMERA v1.1 — três monitores de tracking em um só corpo
+ *  CHIMERA v1.2.1 — três monitores de tracking em um só corpo
  * ═══════════════════════════════════════════════════════════════════
  *  Monitora, em tempo real, as 3 camadas do tracking:
  *
  *    📥 dl.push()  → window.dataLayer (pushes do site)      [amarelo]
- *    🏷️ gtm_tag    → fila interna do GTM (tags processadas)  [azul]
+ *    🏷️ gtm_tag    → fila interna do GTM com Container ID   [azul]
  *    📡 request    → requisições de rede do GA4 (/g/collect) [verde]
  *
  *  API no console:
@@ -63,7 +63,7 @@
         history: { dl: [], gtm: [], req: [] },
         counts:  { dl: {}, gtm: {}, req: {} },
         timers: [],
-        restore: []          // funções que desfazem cada hook (para chimera.off)
+        restore: []
     };
 
     const MAX_HISTORY = 300;
@@ -90,8 +90,6 @@
         if (h.length > MAX_HISTORY) h.shift();
     }
 
-    // Snapshot imutável: evita que mutações posteriores do objeto
-    // apareçam ao expandir o log no console.
     function snapshot(obj) {
         try { return structuredClone(obj); }
         catch (_) {
@@ -100,7 +98,6 @@
         }
     }
 
-    /* Árvore recursiva compartilhada (usada pelos 3 módulos) */
     function renderTree(obj, depth = 0, seen = new WeakSet()) {
         if (depth > MAX_DEPTH) { console.log('%c… (profundidade máxima)', css.muted); return; }
         if (obj !== null && typeof obj === 'object') {
@@ -176,7 +173,7 @@
 
         const wrap = () => {
             const target = window.dataLayer;
-            if (target.push.__chimera) return;   // já é o nosso wrapper
+            if (target.push.__chimera) return;
             const original = target.push;
 
             const wrapped = function (...args) {
@@ -193,8 +190,6 @@
 
         wrap();
 
-        // O GTM sobrescreve dataLayer.push quando carrega — este vigia
-        // re-aplica o hook por cima, mantendo o monitoramento vivo.
         const guard = setInterval(wrap, 1000);
         state.timers.push(guard);
 
@@ -208,26 +203,96 @@
 
     /* ═══════════════ 🏷️ MÓDULO gtm_tag — tags do GTM ═══════════════ */
 
-    function findGTMMessageArray() {
+    function getContainerIdList() {
+        const gtm = window.google_tag_manager || {};
+        const fromGtm = Object.keys(gtm).filter(k => /^(GTM|G|GT|AW|DC|OPT)-[A-Z0-9]+$/i.test(k));
+        if (fromGtm.length) return fromGtm;
+
+        // Fallback: varre tags de script injetadas no DOM
+        const scripts = Array.from(document.querySelectorAll('script[src*="googletagmanager.com/gtm.js"], script[src*="googletagmanager.com/gtag/js"]'));
+        const fromDom = [];
+        for (const s of scripts) {
+            const match = s.src.match(/[?&]id=([A-Z0-9-]+)/i);
+            if (match && match[1] && !fromDom.includes(match[1])) {
+                fromDom.push(match[1]);
+            }
+        }
+        return fromDom;
+    }
+
+    function findGTMQueues() {
         const gtm = window.google_tag_manager;
-        if (!gtm) return null;
-        for (const key of Object.keys(gtm)) {
-            const sub = gtm[key];
-            if (sub === null || typeof sub !== 'object') continue;
-            for (const subKey of Object.keys(sub)) {
-                const target = sub[subKey];
-                if (Array.isArray(target) && target.length > 0 &&
-                    Object.prototype.hasOwnProperty.call(target[0], 'message')) {
-                    return target;
+        if (!gtm) return [];
+
+        const knownContainers = getContainerIdList();
+        const defaultId = knownContainers.length === 1 ? knownContainers[0] : (knownContainers.join(', ') || null);
+        const queues = [];
+        const seenQueues = new Set();
+
+        // 1. Busca direta dentro dos nós identificados como ID de contêiner
+        for (const id of knownContainers) {
+            const containerObj = gtm[id];
+            if (containerObj && typeof containerObj === 'object') {
+                for (const subKey of Object.keys(containerObj)) {
+                    const target = containerObj[subKey];
+                    if (Array.isArray(target) && (
+                        (target.length > 0 && Object.prototype.hasOwnProperty.call(target[0], 'message')) ||
+                        target.__chimera
+                    )) {
+                        if (!seenQueues.has(target)) {
+                            seenQueues.add(target);
+                            queues.push({ containerId: id, queue: target });
+                        }
+                    }
                 }
             }
         }
-        return null;
+
+        // 2. Varredura global no objeto caso esteja armazenado em nós internos (ex: gtm['mb'])
+        for (const key of Object.keys(gtm)) {
+            const sub = gtm[key];
+            if (sub === null || typeof sub !== 'object') continue;
+
+            const resolvedId = /^(GTM|G|GT|AW|DC|OPT)-[A-Z0-9]+$/i.test(key)
+                ? key
+                : (defaultId || 'GTM-Desconhecido');
+
+            for (const subKey of Object.keys(sub)) {
+                const target = sub[subKey];
+                if (Array.isArray(target) && (
+                    (target.length > 0 && Object.prototype.hasOwnProperty.call(target[0], 'message')) ||
+                    target.__chimera
+                )) {
+                    if (!seenQueues.has(target)) {
+                        seenQueues.add(target);
+                        queues.push({ containerId: resolvedId, queue: target });
+                    }
+                }
+            }
+        }
+
+        return queues;
     }
 
-    function gtmTagLog(entry, live = true) {
+    function resolveGTMContainerId(entry, fallbackId) {
+        if (entry && typeof entry === 'object') {
+            if (entry.containerId && /^(GTM|G|GT|AW|DC|OPT)-/i.test(entry.containerId)) return entry.containerId;
+            if (entry.ctid && /^(GTM|G|GT|AW|DC|OPT)-/i.test(entry.ctid)) return entry.ctid;
+            if (entry.gtm_id && /^(GTM|G|GT|AW|DC|OPT)-/i.test(entry.gtm_id)) return entry.gtm_id;
+        }
+        if (fallbackId && /^(GTM|G|GT|AW|DC|OPT)-/i.test(fallbackId)) {
+            return fallbackId;
+        }
+        const known = getContainerIdList();
+        if (known.length === 1) return known[0];
+        if (known.length > 1) return known.join(', ');
+        return fallbackId || 'GTM-Desconhecido';
+    }
+
+    function gtmTagLog(entry, live = true, containerId = null) {
         if (!entry || !entry.message) return;
 
+        const gtmContainer = resolveGTMContainerId(entry, containerId || entry.__containerId);
         const type = entry.message['0'] || 'Desconhecido';
         let eventName = entry.message['1'] || '';
         const params = entry.message['2'] || {};
@@ -239,12 +304,14 @@
         if (live && !passesFilter(eventName)) return;
 
         const args = live
-            ? [`%c🏷️ gtm_tag: ${eventName} | ID: ${streamId} %c#${++state.seq} [${now()}]`, badge('gtm'), css.time]
-            : [`%c🏷️ gtm_tag: ${eventName} | ID: ${streamId}`, badge('gtm')];
+            ? [`%c🏷️ gtm_tag: ${eventName} | [${gtmContainer}] | Destino: ${streamId} %c#${++state.seq} [${now()}]`, badge('gtm'), css.time]
+            : [`%c🏷️ gtm_tag: ${eventName} | [${gtmContainer}] | Destino: ${streamId}`, badge('gtm')];
 
         console.groupCollapsed(...args);
+        console.log('%c▪ Container GTM:', 'color: #f39c12; font-weight: bold;', gtmContainer);
         console.log('%c▪ Tipo de Disparo:', 'color: #3498db; font-weight: bold;', type);
         console.log('%c▪ Nome do Evento:', 'color: #2ecc71; font-weight: bold;', eventName);
+        console.log('%c▪ Destino / Stream:', 'color: #1abc9c; font-weight: bold;', streamId);
 
         if (Object.keys(params).length > 0) {
             console.groupCollapsed('%c📦 Parâmetros Anexados', 'color: #e67e22; font-weight: bold;');
@@ -255,40 +322,55 @@
         }
         console.groupEnd();
 
-        if (live) { count('gtm', eventName); remember('gtm', { t: now(), entry }); }
+        if (live) {
+            count('gtm', eventName);
+            remember('gtm', { t: now(), containerId: gtmContainer, entry });
+        }
     }
 
     function hookGTM() {
-        const MAX_ATTEMPTS = 60; // 30s de polling, depois desiste avisando
+        const MAX_ATTEMPTS = 60;
         let attempts = 0;
+        const hookedQueues = new Set();
 
         const tryAttach = () => {
-            const tagArray = findGTMMessageArray();
-            if (!tagArray) {
+            const queues = findGTMQueues();
+            if (!queues.length) {
                 if (++attempts >= MAX_ATTEMPTS) {
                     clearInterval(poller);
                     console.warn('[Chimera/gtm_tag] GTM não encontrado após 30s. Use chimera.retryGTM() se ele carregar depois.');
                 }
                 return;
             }
-            clearInterval(poller);
-            if (tagArray.push.__chimera) return;
 
-            const original = tagArray.push;
-            const wrapped = function (...args) {
-                const result = original.apply(this, args);
-                if (!state.paused) args.forEach(a => gtmTagLog(a));
-                return result;
-            };
-            wrapped.__chimera = true;
-            wrapped.__original = original;
-            tagArray.push = wrapped;
+            let newHook = false;
+            for (const { containerId, queue } of queues) {
+                if (queue.push.__chimera || hookedQueues.has(queue)) continue;
 
-            state.restore.push(() => {
-                if (tagArray.push.__chimera) tagArray.push = tagArray.push.__original;
-            });
+                const original = queue.push;
+                const wrapped = function (...args) {
+                    const result = original.apply(this, args);
+                    if (!state.paused) args.forEach(a => gtmTagLog(a, true, containerId));
+                    return result;
+                };
+                wrapped.__chimera = true;
+                wrapped.__original = original;
+                wrapped.__containerId = containerId;
+                queue.push = wrapped;
+                hookedQueues.add(queue);
+                newHook = true;
 
-            console.log('%c🏷️ [gtm_tag] Conectado à fila interna do GTM', badge('gtm', true));
+                state.restore.push(() => {
+                    if (queue.push.__chimera) queue.push = queue.push.__original;
+                });
+            }
+
+            if (newHook) {
+                clearInterval(poller);
+                const known = getContainerIdList();
+                const displayIds = known.length ? known.join(', ') : queues.map(q => q.containerId).join(', ');
+                console.log(`%c🏷️ [gtm_tag] Conectado à(s) fila(s) interna(s) do GTM (${displayIds})`, badge('gtm', true));
+            }
         };
 
         const poller = setInterval(tryAttach, 500);
@@ -352,7 +434,6 @@
             const events = [];
 
             if (bodyData && typeof bodyData === 'string' && bodyData.trim()) {
-                // Batch: cada linha do body é um evento; params da URL são comuns a todos
                 for (const line of bodyData.trim().split(/\r?\n/)) {
                     const evt = Object.fromEntries(urlParams.entries());
                     for (const [k, v] of new URLSearchParams(line).entries()) evt[k] = v;
@@ -443,8 +524,6 @@
         }
     }
 
-    // Extrai o body de qualquer formato (string, Blob, URLSearchParams,
-    // ArrayBuffer, Request) e chama requestLog — async quando necessário.
     function extractBody(body, url, method) {
         if (body == null) return requestLog(url, null, method);
         if (typeof body === 'string') return requestLog(url, body, method);
@@ -458,7 +537,6 @@
     }
 
     function hookNetwork() {
-        // fetch
         const originalFetch = window.fetch;
         window.fetch = function (input, init) {
             try {
@@ -475,12 +553,11 @@
                         requestLog(url, null, 'Fetch');
                     }
                 }
-            } catch (_) { /* nunca quebrar a página por causa do monitor */ }
+            } catch (_) {}
             return originalFetch.apply(this, arguments);
         };
         state.restore.push(() => { window.fetch = originalFetch; });
 
-        // sendBeacon (GA4 usa Blob na maioria dos casos)
         const originalBeacon = navigator.sendBeacon?.bind(navigator);
         if (originalBeacon) {
             navigator.sendBeacon = function (url, data) {
@@ -492,7 +569,6 @@
             state.restore.push(() => { navigator.sendBeacon = originalBeacon; });
         }
 
-        // XHR (fallback raro, mas existe em navegadores/configs antigos)
         const originalOpen = XMLHttpRequest.prototype.open;
         const originalSend = XMLHttpRequest.prototype.send;
         XMLHttpRequest.prototype.open = function (method, url) {
@@ -519,7 +595,7 @@
 
     const api = {
         __active: true,
-        version: '1.1',
+        version: '1.2.1',
 
         dl() {
             console.log('%c📥 Histórico Atual do dataLayer', badge('dl', true));
@@ -527,13 +603,16 @@
         },
 
         gtm() {
-            const tagArray = findGTMMessageArray();
-            if (!tagArray) {
+            const queues = findGTMQueues();
+            if (!queues.length) {
                 console.log('%c🏷️ [gtm_tag] Nenhuma tag processada ainda ou GTM ausente.', 'color: #e74c3c; font-weight: bold; font-style: italic;');
                 return;
             }
-            console.log(`%c🏷️ Histórico Interno de Tags do GTM (${tagArray.length} disparos)`, badge('gtm', true));
-            tagArray.forEach(e => gtmTagLog(e, false));
+            const totalDisparos = queues.reduce((sum, q) => sum + q.queue.length, 0);
+            console.log(`%c🏷️ Histórico Interno de Tags do GTM (${totalDisparos} disparos)`, badge('gtm', true));
+            for (const { containerId, queue } of queues) {
+                queue.forEach(e => gtmTagLog(e, false, containerId));
+            }
         },
 
         req() {
@@ -577,7 +656,7 @@
         },
 
         help() {
-            console.log('%c🐲 CHIMERA v1.1 — Comandos', 'background: #111; color: #fff; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 13px;');
+            console.log('%c🐲 CHIMERA v1.2.1 — Comandos', 'background: #111; color: #fff; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 13px;');
             console.log(`%c
   chimera.dl()               histórico do dataLayer          📥 amarelo
   chimera.gtm()              histórico de tags do GTM        🏷️ azul
@@ -593,14 +672,13 @@
         }
     };
 
-    // Atalhos antigos, para não quebrar a memória muscular
     api.kitsune = api.dl;
     api.zapdos  = api.gtm;
     api.huldra  = api.req;
 
     /* ═══════════════ BOOT ═══════════════ */
 
-    console.log('%c🐲 CHIMERA v1.1 ', 'background: #111; color: #fff; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 14px; border-left: 3px solid #e74c3c;');
+    console.log('%c🐲 CHIMERA v1.2.1 ', 'background: #111; color: #fff; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 14px; border-left: 3px solid #e74c3c;');
 
     hookDataLayer();
     console.log('%c📥 [dl.push()] dataLayer monitorado', badge('dl', true));
